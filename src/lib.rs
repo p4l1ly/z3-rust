@@ -1,3 +1,77 @@
+//! High level interface to the Z3 SMT solver. Currently, only support for
+//! boolean logic is implemented. It is therefore usable only as a SAT solver.
+//! We have not yet considered thread safety or reasonable behaviour if multiple
+//! contexts are used at once.
+//!
+//! # Examples
+//!
+//! ```
+//! use z3::Stage;
+//!
+//! // Create Z3 config, context and solver.
+//! let mut ctx = z3::Context::new();
+//!
+//! // Create variable, which is of type Ast, which itself represents an
+//! // immutable reference to a Z3 AST object.
+//! let foo = ctx.var_from_string("foo");
+//!
+//! ctx.assert(foo);
+//!
+//! {
+//!     // Push Z3 solver's stack.
+//!     let mut p = ctx.push();
+//!
+//!     // A basic example of combining Asts.
+//!     let foo_and_not_foo = p.and(vec![foo.inherit(), p.not(foo)]);
+//!     p.assert(foo_and_not_foo);
+//!
+//!     // No way to satisfy foo && !foo.
+//!     assert!(!p.is_sat())
+//! }
+//! // Pop of the Z3 solver's stack happens here, with the drop of the push
+//! // object p. Asts created between push and pop are no more valid, but this
+//! // library ensures that the borrow checker would refuse any leak.
+//!
+//! assert!(ctx.is_sat())
+//! ```
+//!
+//! The following gets refused by the borrow checker because the value
+//! `not_foo`, which is created in the lifetime of `p` is used after `p` is
+//! dropped.
+//! ```compile_fail
+//! use z3::Stage;
+//!
+//! let mut ctx = z3::Context::new();
+//! let foo = ctx.var_from_string("foo");
+//! let not_foo;
+//!
+//! {
+//!     let mut p = ctx.push();
+//!
+//!     not_foo = p.not(foo);
+//! }
+//!
+//! ctx.assert(not_foo);
+//! ```
+//!
+//! Tricks like this one will also not work (because `ctx` is mutably borrowed
+//! by `p`).
+//! ```compile_fail
+//! use z3::Stage;
+//!
+//! let mut ctx = z3::Context::new();
+//! let foo = ctx.var_from_string("foo");
+//! let not_foo;
+//!
+//! {
+//!     let mut p = ctx.push();
+//!
+//!     not_foo = ctx.not(foo);
+//! }
+//!
+//! ctx.assert(not_foo);
+//! ```
+
 use std::ffi::{CString};
 use std::marker::PhantomData;
 use std::mem;
@@ -11,79 +85,9 @@ mod z {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-/// High level interface to the Z3 SMT solver. Currently, only support for
-/// boolean logic is implemented. It is therefore usable only as a SAT solver.
-/// We have not yet considered thread safety or reasonable behaviour if multiple
-/// contexts are used at once.
-///
-/// # Examples
-///
-/// ```
-/// use z3::Stage;
-///
-/// // Create Z3 config, context and solver.
-/// let mut ctx = z3::Context::new();
-///
-/// // Create variable, which is of type Ast, which itself represents an
-/// // immutable reference to a Z3 AST object.
-/// let foo = ctx.var_from_string("foo");
-///
-/// ctx.assert(foo);
-///
-/// {
-///     // Push Z3 solver's stack.
-///     let mut p = ctx.push();
-///
-///     // A basic example of combining Asts.
-///     let foo_and_not_foo = p.and(vec![foo.inherit(), p.not(foo)]);
-///     p.assert(foo_and_not_foo);
-///
-///     // No way to satisfy foo && !foo.
-///     assert!(!p.is_sat())
-/// }
-/// // Pop of the Z3 solver's stack happens here, with the drop of the push
-/// // object p. Asts created between push and pop are no more valid, but this
-/// // library ensures that the borrow checker would refuse any leak.
-///
-/// assert!(ctx.is_sat())
-/// ```
-///
-/// The following gets refused by the borrow checker because the value
-/// `not_foo`, which is created in the lifetime of `p` is used after `p` is
-/// dropped.
-/// ```compile_fail
-/// use z3::Stage;
-///
-/// let mut ctx = z3::Context::new();
-/// let foo = ctx.var_from_string("foo");
-/// let not_foo;
-///
-/// {
-///     let mut p = ctx.push();
-///
-///     not_foo = p.not(foo);
-/// }
-///
-/// ctx.assert(not_foo);
-/// ```
-///
-/// Tricks like this will also not work (because `ctx` is mutably borrowed by
-/// `p`).
-/// ```compile_fail
-/// use z3::Stage;
-///
-/// let mut ctx = z3::Context::new();
-/// let foo = ctx.var_from_string("foo");
-/// let not_foo;
-///
-/// {
-///     let mut p = ctx.push();
-///
-///     not_foo = ctx.not(foo);
-/// }
-///
-/// ctx.assert(not_foo);
-/// ```
+/// Base Z3 objects that holds references to Z3 config, context, sort, solver
+/// and basic reusable formulae: true and false. Each interaction with Z3 should
+/// start with Context::new() and then calling the methods of the object.
 #[derive(Debug)]
 pub struct Context {
     ctx: z::Z3_context,
