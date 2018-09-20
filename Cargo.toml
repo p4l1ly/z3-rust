@@ -1,0 +1,9 @@
+[package]
+name = "z3"
+version = "0.1.0"
+authors = ["Pavol Vargovcik <pavol.vargovcik@gmail.com>"]
+
+[dependencies]
+
+[build-dependencies]
+bindgen = "0.40.0"
