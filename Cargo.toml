@@ -8,7 +8,7 @@ description = "High level interface to the Z3 SMT solver"
 readme = "README.md"
 keywords = ["z3", "sat", "smt"]
 categories = ["science"]
-license = "BSD"
+license = "MIT"
 
 [dependencies]
 
