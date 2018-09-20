@@ -1,5 +1,5 @@
 [package]
-name = "z3"
+name = "z3_ref"
 version = "0.1.0"
 authors = ["Pavol Vargovcik <pavol.vargovcik@gmail.com>"]
 
