@@ -78,6 +78,7 @@
 use std::ffi::{CString};
 use std::marker::PhantomData;
 use std::mem;
+use std::os::raw::c_int;
 
 mod z {
     #![allow(dead_code)]
@@ -240,6 +241,13 @@ pub trait Stage: ctx_like::CtxLike + Sized {
         }
     }
 
+    fn var_from_int<'a>(&self, name: isize) -> Ast<'a, Self> {
+        unsafe {
+            let symbol = z::Z3_mk_int_symbol(self.ctx(), name as c_int);
+            ast!(z::Z3_mk_const(self.ctx(), symbol, self.sort()))
+        }
+    }
+
     fn not<'a, 'b: 'a, T>(&self, x: Ast<'b, T>) -> Ast<'a, Self> {
         unsafe { ast!(z::Z3_mk_not(self.ctx(), x.ptr)) }
     }
@@ -317,7 +325,7 @@ mod test {
     fn double_push() {
         let mut ctx = Context::new();
         let foo = ctx.var_from_string("foo");
-        let bar = ctx.var_from_string("bar");
+        let bar = ctx.var_from_int(25);
 
         ctx.assert(foo);
 
