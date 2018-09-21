@@ -6,7 +6,8 @@
 //! # Examples
 //!
 //! ```
-//! use z3::Stage;
+//! use z3_ref::Stage;
+//! use z3_ref as z3;
 //!
 //! // Create Z3 config, context and solver.
 //! let mut ctx = z3::Context::new();
@@ -39,7 +40,8 @@
 //! `not_foo`, which is created in the lifetime of `p` is used after `p` is
 //! dropped.
 //! ```compile_fail
-//! use z3::Stage;
+//! use z3_ref::Stage;
+//! use z3_ref as z3;
 //!
 //! let mut ctx = z3::Context::new();
 //! let foo = ctx.var_from_string("foo");
@@ -57,7 +59,8 @@
 //! Tricks like this one will also not work (because `ctx` is mutably borrowed
 //! by `p`).
 //! ```compile_fail
-//! use z3::Stage;
+//! use z3_ref::Stage;
+//! use z3_ref as z3;
 //!
 //! let mut ctx = z3::Context::new();
 //! let foo = ctx.var_from_string("foo");
