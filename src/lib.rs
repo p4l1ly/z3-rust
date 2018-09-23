@@ -14,7 +14,7 @@
 //!
 //! // Create variable, which is of type Ast, which itself represents an
 //! // immutable reference to a Z3 AST object.
-//! let foo = ctx.var_from_string("foo");
+//! let foo = ctx.var_from_int(0);
 //!
 //! ctx.assert(foo);
 //!
@@ -44,7 +44,7 @@
 //! use z3_ref as z3;
 //!
 //! let mut ctx = z3::Context::new();
-//! let foo = ctx.var_from_string("foo");
+//! let foo = ctx.var_from_int(0);
 //! let not_foo;
 //!
 //! {
@@ -63,7 +63,7 @@
 //! use z3_ref as z3;
 //!
 //! let mut ctx = z3::Context::new();
-//! let foo = ctx.var_from_string("foo");
+//! let foo = ctx.var_from_int(0);
 //! let not_foo;
 //!
 //! {
@@ -75,10 +75,9 @@
 //! ctx.assert(not_foo);
 //! ```
 
-use std::ffi::{CString};
 use std::marker::PhantomData;
 use std::mem;
-use std::os::raw::c_int;
+use std::os::raw::{c_int, c_uint};
 
 mod z {
     #![allow(dead_code)]
@@ -233,11 +232,39 @@ pub trait Stage: ctx_like::CtxLike + Sized {
         }}
     }
 
-    fn var_from_string<'a>(&self, name: &str) -> Ast<'a, Self> {
+    fn model<'a>(&mut self) -> Vec<(isize, Evaluation)> {
         unsafe {
-            let symbol = z::Z3_mk_string_symbol(self.ctx(),
-                CString::new(name).unwrap().as_ptr());
-            ast!(z::Z3_mk_const(self.ctx(), symbol, self.sort()))
+            let ctx = self.ctx();
+
+            let model = z::Z3_solver_get_model(ctx, self.solver());
+            z::Z3_model_inc_ref(ctx, model);
+
+            let var_count = z::Z3_model_get_num_consts(ctx, model) as usize;
+
+            let mut result = Vec::with_capacity(var_count);
+
+            for i in 0..var_count {
+                let decl = z::Z3_model_get_const_decl(ctx, model, i as c_uint);
+                let symbol = z::Z3_get_decl_name(ctx, decl);
+                let name = z::Z3_get_symbol_int(ctx, symbol) as isize;
+
+                let interp = z::Z3_model_get_const_interp(ctx, model, decl);
+                let evaluation =
+                    if interp.is_null() { Evaluation::DoesNotMatter }
+                    else {
+                        match z::Z3_get_bool_value(ctx, interp) {
+                            z::Z3_lbool_Z3_L_TRUE => Evaluation::True,
+                            z::Z3_lbool_Z3_L_FALSE => Evaluation::False,
+                            _ => panic!("undefined solver check result"),
+                        }
+                    };
+
+                result.push((name, evaluation));
+            }
+
+            z::Z3_model_dec_ref(ctx, model);
+
+            result
         }
     }
 
@@ -317,6 +344,9 @@ pub trait Stage: ctx_like::CtxLike + Sized {
 impl Stage for Context {}
 impl<'a, T> Stage for Push<'a, T> {}
 
+#[derive(Debug)]
+pub enum Evaluation{ True, False, DoesNotMatter }
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -324,14 +354,14 @@ mod test {
     #[test]
     fn double_push() {
         let mut ctx = Context::new();
-        let foo = ctx.var_from_string("foo");
+        let foo = ctx.var_from_int(0);
         let bar = ctx.var_from_int(25);
 
         ctx.assert(foo);
 
         {
             let mut push1 = ctx.push();
-            let baz = push1.var_from_string("baz");
+            let baz = push1.var_from_int(1);
 
             push1.assert(bar);
             {
@@ -366,5 +396,22 @@ mod test {
 
         ctx.assert(z);
         println!("ctx.is_sat: {}", ctx.is_sat());
+    }
+
+    #[test]
+    fn model() {
+        let mut ctx = Context::new();
+
+        let x = ctx.var_from_int(1);
+        let y = ctx.var_from_int(3);
+        let z = ctx.var_from_int(2);
+
+        let f = ctx.and(vec![ctx.not(y), x, ctx.not(z)]);
+        ctx.assert(f);
+
+        assert!(ctx.is_sat());
+        let m = ctx.model();
+
+        println!("model: {:?}", m);
     }
 }
