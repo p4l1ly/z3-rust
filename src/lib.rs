@@ -33,7 +33,13 @@
 //! // object p. Asts created between push and pop are no more valid, but this
 //! // library ensures that the borrow checker would refuse any leak.
 //!
-//! assert!(ctx.is_sat())
+//! // If we want to only check whether the theory is satsfiable, we can do:
+//! // assert!(ctx.is_sat())
+//!
+//! match ctx.get_model_if_sat() {
+//!     Some(model) => assert!(model == vec![(0, z3::Evaluation::True)]),
+//!     _ => panic!("the theory should have been satisfiable!"),
+//! }
 //! ```
 //!
 //! The following gets refused by the borrow checker because the value
