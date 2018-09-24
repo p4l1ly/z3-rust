@@ -148,7 +148,7 @@ pub struct Push<'a, T: 'a> {
     ctx: z::Z3_context,
     sort: z::Z3_sort,
     solver: z::Z3_solver,
-    phantom: PhantomData<&'a T>,
+    phantom: PhantomData<&'a mut T>,
 }
 
 impl<'a, T> Drop for Push<'a, T> {
@@ -190,6 +190,43 @@ mod ctx_like {
         fn ctx(&self) -> z::Z3_context;
         fn sort(&self) -> z::Z3_sort;
         fn solver(&self) -> z::Z3_solver;
+
+        fn model(&self) -> Vec<(isize, Evaluation)> {
+            unsafe {
+                let ctx = self.ctx();
+
+                let model = z::Z3_solver_get_model(ctx, self.solver());
+                z::Z3_model_inc_ref(ctx, model);
+
+                let var_count = z::Z3_model_get_num_consts(ctx, model) as usize;
+
+                let mut result = Vec::with_capacity(var_count);
+
+                for i in 0..var_count {
+                    let decl = z::Z3_model_get_const_decl(
+                        ctx, model, i as c_uint);
+                    let symbol = z::Z3_get_decl_name(ctx, decl);
+                    let name = z::Z3_get_symbol_int(ctx, symbol) as isize;
+
+                    let interp = z::Z3_model_get_const_interp(ctx, model, decl);
+                    let evaluation =
+                        if interp.is_null() { Evaluation::DoesNotMatter }
+                        else {
+                            match z::Z3_get_bool_value(ctx, interp) {
+                                z::Z3_lbool_Z3_L_TRUE => Evaluation::True,
+                                z::Z3_lbool_Z3_L_FALSE => Evaluation::False,
+                                _ => panic!("undefined solver check result"),
+                            }
+                        };
+
+                    result.push((name, evaluation));
+                }
+
+                z::Z3_model_dec_ref(ctx, model);
+
+                result
+            }
+        }
     }
 
     impl CtxLike for Context {
@@ -232,40 +269,12 @@ pub trait Stage: ctx_like::CtxLike + Sized {
         }}
     }
 
-    fn model<'a>(&mut self) -> Vec<(isize, Evaluation)> {
-        unsafe {
-            let ctx = self.ctx();
-
-            let model = z::Z3_solver_get_model(ctx, self.solver());
-            z::Z3_model_inc_ref(ctx, model);
-
-            let var_count = z::Z3_model_get_num_consts(ctx, model) as usize;
-
-            let mut result = Vec::with_capacity(var_count);
-
-            for i in 0..var_count {
-                let decl = z::Z3_model_get_const_decl(ctx, model, i as c_uint);
-                let symbol = z::Z3_get_decl_name(ctx, decl);
-                let name = z::Z3_get_symbol_int(ctx, symbol) as isize;
-
-                let interp = z::Z3_model_get_const_interp(ctx, model, decl);
-                let evaluation =
-                    if interp.is_null() { Evaluation::DoesNotMatter }
-                    else {
-                        match z::Z3_get_bool_value(ctx, interp) {
-                            z::Z3_lbool_Z3_L_TRUE => Evaluation::True,
-                            z::Z3_lbool_Z3_L_FALSE => Evaluation::False,
-                            _ => panic!("undefined solver check result"),
-                        }
-                    };
-
-                result.push((name, evaluation));
-            }
-
-            z::Z3_model_dec_ref(ctx, model);
-
-            result
-        }
+    fn get_model_if_sat(&mut self) -> Option<Vec<(isize, Evaluation)>> {
+        unsafe { match z::Z3_solver_check(self.ctx(), self.solver()) {
+            z::Z3_lbool_Z3_L_TRUE => Some(self.model()),
+            z::Z3_lbool_Z3_L_FALSE => None,
+            _ => panic!("undefined solver check result"),
+        }}
     }
 
     fn var_from_int<'a>(&self, name: isize) -> Ast<'a, Self> {
@@ -344,7 +353,7 @@ pub trait Stage: ctx_like::CtxLike + Sized {
 impl Stage for Context {}
 impl<'a, T> Stage for Push<'a, T> {}
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Evaluation{ True, False, DoesNotMatter }
 
 #[cfg(test)]
@@ -409,9 +418,14 @@ mod test {
         let f = ctx.and(vec![ctx.not(y), x, ctx.not(z)]);
         ctx.assert(f);
 
-        assert!(ctx.is_sat());
-        let m = ctx.model();
-
-        println!("model: {:?}", m);
+        match ctx.get_model_if_sat() {
+            Some(model) => {
+                assert!(model.len() == 3);
+                assert!(model.contains(&(2, Evaluation::False)));
+                assert!(model.contains(&(1, Evaluation::True)));
+                assert!(model.contains(&(3, Evaluation::False)));
+            },
+            _ => assert!(false),
+        }
     }
 }
