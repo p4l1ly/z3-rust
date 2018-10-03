@@ -104,7 +104,7 @@ pub struct Context {
     sort: z::Z3_sort,
     ztrue: z::Z3_ast,
     zfalse: z::Z3_ast,
-    solver: z::Z3_solver,
+    solver: z::Z3_optimize,
 }
 
 macro_rules! ast { ($ptr:expr) => { Ast{ptr: $ptr, phantom: PhantomData} } }
@@ -116,8 +116,8 @@ impl Context {
             let ctx = z::Z3_mk_context(cfg);
             let sort = z::Z3_mk_bool_sort(ctx);
 
-            let solver = z::Z3_mk_solver(ctx);
-            z::Z3_solver_inc_ref(ctx, solver);
+            let solver = z::Z3_mk_optimize(ctx);
+            z::Z3_optimize_inc_ref(ctx, solver);
 
             let ztrue = z::Z3_mk_true(ctx);
             let zfalse = z::Z3_mk_false(ctx);
@@ -138,7 +138,7 @@ impl Context {
 impl Drop for Context {
     fn drop(&mut self) {
         unsafe {
-            z::Z3_solver_dec_ref(self.ctx, self.solver);
+            z::Z3_optimize_dec_ref(self.ctx, self.solver);
             z::Z3_del_context(self.ctx);
             z::Z3_del_config(self.cfg);
         }
@@ -153,13 +153,13 @@ impl Drop for Context {
 pub struct Push<'a, T: 'a> {
     ctx: z::Z3_context,
     sort: z::Z3_sort,
-    solver: z::Z3_solver,
+    solver: z::Z3_optimize,
     phantom: PhantomData<&'a mut T>,
 }
 
 impl<'a, T> Drop for Push<'a, T> {
     fn drop(&mut self) {
-        unsafe { z::Z3_solver_pop(self.ctx, self.solver, 1); }
+        unsafe { z::Z3_optimize_pop(self.ctx, self.solver); }
     }
 }
 
@@ -195,13 +195,13 @@ mod ctx_like {
     pub trait CtxLike {
         fn ctx(&self) -> z::Z3_context;
         fn sort(&self) -> z::Z3_sort;
-        fn solver(&self) -> z::Z3_solver;
+        fn solver(&self) -> z::Z3_optimize;
 
         fn model(&self) -> Vec<(isize, Evaluation)> {
             unsafe {
                 let ctx = self.ctx();
 
-                let model = z::Z3_solver_get_model(ctx, self.solver());
+                let model = z::Z3_optimize_get_model(ctx, self.solver());
                 z::Z3_model_inc_ref(ctx, model);
 
                 let var_count = z::Z3_model_get_num_consts(ctx, model) as usize;
@@ -238,13 +238,13 @@ mod ctx_like {
     impl CtxLike for Context {
         #[inline] fn ctx(&self) -> z::Z3_context { self.ctx }
         #[inline] fn sort(&self) -> z::Z3_sort { self.sort }
-        #[inline] fn solver(&self) -> z::Z3_solver { self.solver }
+        #[inline] fn solver(&self) -> z::Z3_optimize { self.solver }
     }
 
     impl<'a, T> CtxLike for Push<'a, T> {
         #[inline] fn ctx(&self) -> z::Z3_context { self.ctx }
         #[inline] fn sort(&self) -> z::Z3_sort { self.sort }
-        #[inline] fn solver(&self) -> z::Z3_solver { self.solver }
+        #[inline] fn solver(&self) -> z::Z3_optimize { self.solver }
     }
 }
 
@@ -254,7 +254,7 @@ mod ctx_like {
 /// `Push`: operators of the logic, solver's assert, is_sat, and push functions.
 pub trait Stage: ctx_like::CtxLike + Sized {
     fn push<'a>(&'a mut self) -> Push<'a, Self> {
-        unsafe { z::Z3_solver_push(self.ctx(), self.solver()); }
+        unsafe { z::Z3_optimize_push(self.ctx(), self.solver()); }
         Push{
             ctx: self.ctx(),
             sort: self.sort(),
@@ -264,11 +264,11 @@ pub trait Stage: ctx_like::CtxLike + Sized {
     }
 
     fn assert<'a, T>(&'a mut self, ast: Ast<'a, T>) {
-        unsafe { z::Z3_solver_assert(self.ctx(), self.solver(), ast.ptr); }
+        unsafe { z::Z3_optimize_assert(self.ctx(), self.solver(), ast.ptr); }
     }
 
     fn is_sat(&mut self) -> bool {
-        unsafe { match z::Z3_solver_check(self.ctx(), self.solver()) {
+        unsafe { match z::Z3_optimize_check(self.ctx(), self.solver()) {
             z::Z3_lbool_Z3_L_TRUE => true,
             z::Z3_lbool_Z3_L_FALSE => false,
             _ => panic!("undefined solver check result"),
@@ -276,7 +276,7 @@ pub trait Stage: ctx_like::CtxLike + Sized {
     }
 
     fn get_model_if_sat(&mut self) -> Option<Vec<(isize, Evaluation)>> {
-        unsafe { match z::Z3_solver_check(self.ctx(), self.solver()) {
+        unsafe { match z::Z3_optimize_check(self.ctx(), self.solver()) {
             z::Z3_lbool_Z3_L_TRUE => Some(self.model()),
             z::Z3_lbool_Z3_L_FALSE => None,
             _ => panic!("undefined solver check result"),
