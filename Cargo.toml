@@ -1,6 +1,6 @@
 [package]
 name = "z3_ref"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Pavol Vargovcik <pavol.vargovcik@gmail.com>"]
 
 repository = "https://github.com/p4l1ly/z3-rust"
