@@ -27,17 +27,15 @@
 //!     p.assert(foo_and_not_foo);
 //!
 //!     // No way to satisfy foo && !foo.
-//!     assert!(!p.is_sat())
+//!     assert!(!p.check().is_some())
 //! }
 //! // Pop of the Z3 solver's stack happens here, with the drop of the push
 //! // object p. Asts created between push and pop are no more valid, but this
 //! // library ensures that the borrow checker would refuse any leak.
 //!
-//! // If we want to only check whether the theory is satsfiable, we can do:
-//! // assert!(ctx.is_sat())
-//!
-//! match ctx.get_model_if_sat() {
-//!     Some(model) => assert!(model == vec![(0, z3::Evaluation::True)]),
+//! match ctx.check() {
+//!     Some(result) => assert!(
+//!         result.model() == vec![(0, z3::Evaluation::True)]),
 //!     _ => panic!("the theory should have been satisfiable!"),
 //! }
 //! ```
@@ -81,9 +79,11 @@
 //! ctx.assert(not_foo);
 //! ```
 
+use std::ffi::{CString, CStr};
 use std::marker::PhantomData;
 use std::mem;
 use std::os::raw::{c_int, c_uint};
+use std::ptr;
 
 mod z {
     #![allow(dead_code)]
@@ -196,44 +196,8 @@ mod ctx_like {
         fn ctx(&self) -> z::Z3_context;
         fn sort(&self) -> z::Z3_sort;
         fn solver(&self) -> z::Z3_optimize;
-
-        fn model(&self) -> Vec<(isize, Evaluation)> {
-            unsafe {
-                let ctx = self.ctx();
-
-                let model = z::Z3_optimize_get_model(ctx, self.solver());
-                z::Z3_model_inc_ref(ctx, model);
-
-                let var_count = z::Z3_model_get_num_consts(ctx, model) as usize;
-
-                let mut result = Vec::with_capacity(var_count);
-
-                for i in 0..var_count {
-                    let decl = z::Z3_model_get_const_decl(
-                        ctx, model, i as c_uint);
-                    let symbol = z::Z3_get_decl_name(ctx, decl);
-                    let name = z::Z3_get_symbol_int(ctx, symbol) as isize;
-
-                    let interp = z::Z3_model_get_const_interp(ctx, model, decl);
-                    let evaluation =
-                        if interp.is_null() { Evaluation::DoesNotMatter }
-                        else {
-                            match z::Z3_get_bool_value(ctx, interp) {
-                                z::Z3_lbool_Z3_L_TRUE => Evaluation::True,
-                                z::Z3_lbool_Z3_L_FALSE => Evaluation::False,
-                                _ => panic!("undefined solver check result"),
-                            }
-                        };
-
-                    result.push((name, evaluation));
-                }
-
-                z::Z3_model_dec_ref(ctx, model);
-
-                result
-            }
-        }
     }
+
 
     impl CtxLike for Context {
         #[inline] fn ctx(&self) -> z::Z3_context { self.ctx }
@@ -248,11 +212,65 @@ mod ctx_like {
     }
 }
 
+pub struct SolverResult<'a, T: ctx_like::CtxLike + 'a> {
+    ctx: &'a mut T,
+}
+
+impl<'a, T: ctx_like::CtxLike + 'a> SolverResult<'a, T> {
+    pub fn model(&self) -> Vec<(isize, Evaluation)> {
+        unsafe {
+            let ctx = self.ctx.ctx();
+
+            let model = z::Z3_optimize_get_model(ctx, self.ctx.solver());
+            z::Z3_model_inc_ref(ctx, model);
+
+            let var_count = z::Z3_model_get_num_consts(ctx, model) as usize;
+
+            let mut result = Vec::with_capacity(var_count);
+
+            for i in 0..var_count {
+                let decl = z::Z3_model_get_const_decl(
+                    ctx, model, i as c_uint);
+                let symbol = z::Z3_get_decl_name(ctx, decl);
+
+                let kind = z::Z3_get_symbol_kind(ctx, symbol);
+                if kind == z::Z3_symbol_kind_Z3_STRING_SYMBOL { continue }
+
+                let name = z::Z3_get_symbol_int(ctx, symbol) as isize;
+
+                let interp = z::Z3_model_get_const_interp(ctx, model, decl);
+                let evaluation =
+                    if interp.is_null() { Evaluation::DoesNotMatter }
+                    else {
+                        match z::Z3_get_bool_value(ctx, interp) {
+                            z::Z3_lbool_Z3_L_TRUE => Evaluation::True,
+                            z::Z3_lbool_Z3_L_FALSE => Evaluation::False,
+                            _ => panic!("undefined solver check result"),
+                        }
+                    };
+
+                result.push((name, evaluation));
+            }
+
+            z::Z3_model_dec_ref(ctx, model);
+
+            result
+        }
+    }
+}
+
 /// `Context` and `Push` have very similar semantics, both are references to the
 /// Z3 context + config + solver, `Push` has only an extra functionality to pop
 /// on drop. This module implements public common functions of `Context` and
-/// `Push`: operators of the logic, solver's assert, is_sat, and push functions.
+/// `Push`: operators of the logic, solver's assert, check, and push functions.
 pub trait Stage: ctx_like::CtxLike + Sized {
+    fn solver_sexpr(&self) -> String {
+        unsafe {
+            let ptr = z::Z3_optimize_to_string(self.ctx(), self.solver());
+            String::from(CStr::from_ptr(ptr).to_str().unwrap())
+        }
+    }
+
     fn push<'a>(&'a mut self) -> Push<'a, Self> {
         unsafe { z::Z3_optimize_push(self.ctx(), self.solver()); }
         Push{
@@ -267,17 +285,18 @@ pub trait Stage: ctx_like::CtxLike + Sized {
         unsafe { z::Z3_optimize_assert(self.ctx(), self.solver(), ast.ptr); }
     }
 
-    fn is_sat(&mut self) -> bool {
-        unsafe { match z::Z3_optimize_check(self.ctx(), self.solver()) {
-            z::Z3_lbool_Z3_L_TRUE => true,
-            z::Z3_lbool_Z3_L_FALSE => false,
-            _ => panic!("undefined solver check result"),
-        }}
+    fn assert_soft<'a, T>(&'a mut self, ast: Ast<'a, T>, weight: f32) {
+        unsafe {
+            let weight = format!("{}", weight);
+            let weight = CString::new(weight).unwrap().into_raw();
+            z::Z3_optimize_assert_soft(
+                self.ctx(), self.solver(), ast.ptr, weight, ptr::null_mut());
+        }
     }
 
-    fn get_model_if_sat(&mut self) -> Option<Vec<(isize, Evaluation)>> {
+    fn check<'a>(&'a mut self) -> Option<SolverResult<'a, Self>> {
         unsafe { match z::Z3_optimize_check(self.ctx(), self.solver()) {
-            z::Z3_lbool_Z3_L_TRUE => Some(self.model()),
+            z::Z3_lbool_Z3_L_TRUE => Some(SolverResult{ctx: self}),
             z::Z3_lbool_Z3_L_FALSE => None,
             _ => panic!("undefined solver check result"),
         }}
@@ -382,23 +401,23 @@ mod test {
             {
                 let mut push2 = push1.push();
 
-                assert!(push2.is_sat());
+                assert!(push2.check().is_some());
 
                 let nbar = push2.not(bar);
                 push2.assert(nbar);
 
-                assert!(!push2.is_sat());
+                assert!(!push2.check().is_some());
             }
 
-            assert!(push1.is_sat());
+            assert!(push1.check().is_some());
 
             let x = push1.and(vec![baz, push1.not(baz), bar.inherit()]);
             push1.assert(x);
 
-            assert!(!push1.is_sat());
+            assert!(!push1.check().is_some());
         }
 
-        assert!(ctx.is_sat());
+        assert!(ctx.check().is_some());
     }
 
     #[test]
@@ -410,7 +429,7 @@ mod test {
         let z = ctx.xor(ctx.implies(ctx.iff(y, y), y), y);
 
         ctx.assert(z);
-        println!("ctx.is_sat: {}", ctx.is_sat());
+        println!("ctx.is_sat: {}", ctx.check().is_some());
     }
 
     #[test]
@@ -424,12 +443,36 @@ mod test {
         let f = ctx.and(vec![ctx.not(y), x, ctx.not(z)]);
         ctx.assert(f);
 
-        match ctx.get_model_if_sat() {
-            Some(model) => {
+        match ctx.check() {
+            Some(result) => {
+                let model = result.model();
                 assert!(model.len() == 3);
                 assert!(model.contains(&(2, Evaluation::False)));
                 assert!(model.contains(&(1, Evaluation::True)));
                 assert!(model.contains(&(3, Evaluation::False)));
+            },
+            _ => assert!(false),
+        }
+    }
+
+    #[test]
+    fn soft_asserts() {
+        let mut ctx = Context::new();
+
+        let x = ctx.var_from_int(0);
+        let y = ctx.var_from_int(1);
+
+        let f = ctx.or(vec![x, y]);
+        ctx.assert(f);
+
+        ctx.assert_soft(x, 1.0);
+        ctx.assert_soft(y, 1.0);
+
+        match ctx.check() {
+            Some(result) => {
+                let model = result.model();
+                assert!(model.contains(&(0, Evaluation::True)));
+                assert!(model.contains(&(1, Evaluation::True)));
             },
             _ => assert!(false),
         }
